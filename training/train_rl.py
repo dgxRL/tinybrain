@@ -47,7 +47,7 @@ from .rewards import tools as tool_reward
 from .rewards.tools import ToolEnv
 from .rollout import Episode, collate, keep_fitting, run_agent, sample_group, token_logprobs
 from .trainer_utils import (add_optimizer_args, autocast, clip_gradients, find_stage, format_eta, load_model, optimizers_from_args, pick_device,
-                            save_checkpoint, set_lr_scale, setup_device, step_optimizers)
+                            save_checkpoint, set_lr_scale, setup_device, step_optimizers, wandb_log, wandb_session)
 
 # 程序判分的题：奖励函数 reward(episode, task) -> 0 到 1
 PROGRAM_REWARDS = {"math": math_reward.reward, "code": code_reward.reward, "agent": tool_reward.reward, "choice": choice_reward.reward,
@@ -140,7 +140,8 @@ def train(cfg, judge=None) -> dict:
     top_k = cfg.top_k or None
     print(f"设备 {device}；策略模型 {cfg.init}；{len(tasks)} 道题；每步 {cfg.prompts_per_step} 道 × {cfg.group_size} 个回答，共 {cfg.steps} 步", flush=True)
     stats, started = {}, time.perf_counter()
-    with open(out / "log.jsonl", "a", encoding="utf-8") as log:
+    with open(out / "log.jsonl", "a", encoding="utf-8") as log, \
+            wandb_session(out, cfg.wandb_project, cfg.use_wandb, vars(cfg)) as wandb:
         for step in range(cfg.steps):
             t0 = time.perf_counter()
             batch = [tasks[i] for i in rng.choice(len(tasks), size=min(cfg.prompts_per_step, len(tasks)), replace=False)]
@@ -185,6 +186,7 @@ def train(cfg, judge=None) -> dict:
                          rollout_s=round(rollout_s, 1), step_s=round(time.perf_counter() - t0, 1))
             log.write(json.dumps(stats, ensure_ascii=False) + "\n")
             log.flush()
+            wandb_log(wandb, stats, step + 1)  # 和 log.jsonl 完全相同的字段
             if (step + 1) % cfg.log_every == 0 or step + 1 == cfg.steps:
                 kinds = "，".join(f"{k} {v:+.3f}" for k, v in stats["by_kind"].items())
                 eta = format_eta((cfg.steps - step - 1) * (time.perf_counter() - started) / (step + 1))
@@ -228,6 +230,8 @@ def parse_args(argv=None):
     g = p.add_argument_group("记录、存档和硬件")
     g.add_argument("--log-every", type=int, default=1)
     g.add_argument("--save-every", type=int, default=50)
+    g.add_argument("--use-wandb", action="store_true", help="把和 log.jsonl 相同的记录同步到 Weights & Biases")
+    g.add_argument("--wandb-project", default="TinyBrain-RL", help="wandb 项目名")
     g.add_argument("--device", default="auto")
     args = p.parse_args(argv)
     args.init = args.init or str(find_stage(args.run, ("sft",)))

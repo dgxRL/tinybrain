@@ -40,7 +40,7 @@ from .dataset import open_mixed
 from .distributed import Zero, init_distributed
 from .trainer_utils import (add_optimizer_args, autocast, clip_gradients, compile_model, count, decay_scale, format_eta, load_checkpoint, lr_scale,
                             optimizers_from_args, resume, rows_per_step_of, saturated_share, save_checkpoint, set_lr_scale, setup_device,
-                            step_optimizers, wsd_scale)
+                            step_optimizers, wandb_log, wandb_start, wsd_scale)
 
 MODEL_ARGS = ("dim", "n_layers", "n_heads", "n_kv_heads", "max_seq_len", "window", "moe_experts")  # 命令行上能直接改的模型设置
 DEFAULTS = dict(data="data/pretrain_nano.parquet", seq_len=2048, batch_size=8, grad_accum=1, seed=0, final_lr_frac=0.1)
@@ -264,17 +264,7 @@ def run_training(args, zero: Zero, device: torch.device) -> dict:
     smooth, val_loss, loss_value = None, None, float("nan")
     last_time, last_step = time.perf_counter(), start_step
     log = open(out / "log.jsonl", "a", encoding="utf-8") if zero.main else None
-    wandb = None  # 装了 wandb 且 --use-wandb 时是 wandb 模块；只在 0 号卡上连
-    if args.use_wandb and zero.main:
-        import wandb as wandb_module
-        wandb = wandb_module
-        # run id 存在输出目录里：--resume 接着训时接回同一条曲线（存进存档要动格式，没必要）
-        id_file = out / "wandb_id.txt"
-        run_id = id_file.read_text().strip() if id_file.exists() else None
-        wandb.init(project=args.wandb_project, id=run_id, resume="must" if run_id else None,
-                   name=str(out), config=vars(args))
-        if not run_id:
-            id_file.write_text(wandb.run.id)
+    wandb = wandb_start(out, args.wandb_project, args.use_wandb and zero.main, vars(args), resume=args.resume) if zero.main else None
     try:
         for step in range(start_step, steps):
             scale = schedule(step)
@@ -329,8 +319,7 @@ def run_training(args, zero: Zero, device: torch.device) -> dict:
             if record and log:
                 log.write(json.dumps(record) + "\n")
                 log.flush()
-                if wandb:
-                    wandb.log(record, step=done)  # 和 log.jsonl 完全相同的字段：loss、smooth_loss、lr_scale、grad_norm、val_loss……
+                wandb_log(wandb, record, done)  # 和 log.jsonl 完全相同的字段：loss、smooth_loss、lr_scale、grad_norm、val_loss……
             if done % args.save_every == 0 or done == steps:
                 states = zero.gather_optimizer_states(optimizers)  # 多卡时所有卡一起合成，0 号卡写盘
                 if zero.main:

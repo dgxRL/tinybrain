@@ -24,7 +24,8 @@ import torch
 
 from .dataset import PackedData, open_data
 from .trainer_utils import (add_optimizer_args, autocast, clip_gradients, compile_model, count, find_stage, format_eta, load_model, lr_scale,
-                            optimizers_from_args, pick_device, resume, saturated_share, save_checkpoint, set_lr_scale, setup_device, step_optimizers)
+                            optimizers_from_args, pick_device, resume, saturated_share, save_checkpoint, set_lr_scale, setup_device, step_optimizers,
+                            wandb_log, wandb_session)
 
 
 def open_chat_data(directory: str) -> tuple[PackedData, PackedData]:
@@ -98,7 +99,8 @@ def train(args) -> dict:
     model.train()
     smooth, val_loss, loss_value, learned = None, None, float("nan"), 0
     last_time, last_step = time.perf_counter(), start_step
-    with open(out / "log.jsonl", "a", encoding="utf-8") as log:
+    with open(out / "log.jsonl", "a", encoding="utf-8") as log, \
+            wandb_session(out, args.wandb_project, args.use_wandb, vars(args), resume=args.resume) as wandb:
         for step in range(start_step, steps):
             scale = lr_scale(step, steps, args.warmup_steps, args.final_lr_frac)
             set_lr_scale(optimizers, scale * args.lr_mult)
@@ -138,6 +140,7 @@ def train(args) -> dict:
             if record:
                 log.write(json.dumps(record) + "\n")
                 log.flush()
+                wandb_log(wandb, record, done)  # 和 log.jsonl 完全相同的字段
             if done % args.save_every == 0 or done == steps:
                 save_checkpoint(out / "ckpt.pt", model, optimizers, done, sft_config=vars(args))
     return dict(step=steps, loss=loss_value, val_loss=val_loss, tokens=learned)
@@ -168,6 +171,8 @@ def parse_args(argv=None):
     g.add_argument("--eval-batches", type=int, default=20)
     g.add_argument("--save-every", type=int, default=200)
     g.add_argument("--resume", action="store_true")
+    g.add_argument("--use-wandb", action="store_true", help="把和 log.jsonl 相同的记录同步到 Weights & Biases")
+    g.add_argument("--wandb-project", default="TinyBrain-SFT", help="wandb 项目名")
 
     g = p.add_argument_group("硬件")
     g.add_argument("--device", default="auto")

@@ -40,6 +40,39 @@ def autocast(device: torch.device):
     return contextlib.nullcontext()
 
 
+# ---------- wandb
+
+def wandb_start(out: Path, project: str, enabled: bool, config: dict, resume: bool = False):
+    """--use-wandb 时连 wandb（不用或没装时返回 None，wandb 按需导入，不是必装依赖）。
+    run id 存在 out/wandb_id.txt；resume=True 时接回上次的 run（接着训时曲线不断开），否则开新 run。"""
+    if not enabled:
+        return None
+    import wandb
+    id_file = out / "wandb_id.txt"
+    run_id = id_file.read_text().strip() if resume and id_file.exists() else None
+    wandb.init(project=project, id=run_id, resume="must" if run_id else None, name=str(out),
+               config={k: v for k, v in config.items() if k != "use_wandb"})
+    id_file.write_text(wandb.run.id)
+    return wandb
+
+
+def wandb_log(wandb, record: dict, step: int) -> None:
+    """把和 log.jsonl 相同的记录发给 wandb；wandb 是 None 就不动。"""
+    if wandb:
+        wandb.log(record, step=step)
+
+
+@contextlib.contextmanager
+def wandb_session(out: Path, project: str, enabled: bool, config: dict, resume: bool = False):
+    """和写 log.jsonl 的 with 连用：with open(...) as log, wandb_session(...) as wandb: 退出（包括出错）时结束这个 run。"""
+    wandb = wandb_start(out, project, enabled, config, resume)
+    try:
+        yield wandb
+    finally:
+        if wandb:
+            wandb.finish()
+
+
 def compile_model(model: torch.nn.Module, device: torch.device, enabled: bool = True, seq_len: int | None = None,
                   autotune: bool = False, attention_backend: str = "flex") -> torch.nn.Module:
     """CUDA 上编译前向；激活重计算时逐层编译，保留层间的释放边界。MoE 不编译。"""
