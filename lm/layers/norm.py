@@ -18,6 +18,11 @@ class RMSNorm(nn.RMSNorm):
 
     def forward(self, x):
         if x.is_cuda and x.dtype != torch.float64 and LigerRMSNormFunction is not None:
+            if torch.compiler.is_compiling():
+                # dynamo 追踪 Liger 的 autograd.Function 会生成损坏的 FX 图（多出引用不存在参数的
+                # _cuda_maybe_exchange_device 节点）。gemma 模式加的 offset 是 0，数学上就是普通
+                # RMSNorm，Liger 只是在 fp32 里算中间结果，这里照搬即可。
+                return super().forward(x.float()).type_as(x)
             eps = self.eps if self.eps is not None else torch.finfo(x.dtype).eps
             return LigerRMSNormFunction.apply(x, self.weight, eps, 0.0, "gemma", False)
         return super().forward(x)

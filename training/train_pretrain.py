@@ -264,6 +264,17 @@ def run_training(args, zero: Zero, device: torch.device) -> dict:
     smooth, val_loss, loss_value = None, None, float("nan")
     last_time, last_step = time.perf_counter(), start_step
     log = open(out / "log.jsonl", "a", encoding="utf-8") if zero.main else None
+    wandb = None  # 装了 wandb 且 --use-wandb 时是 wandb 模块；只在 0 号卡上连
+    if args.use_wandb and zero.main:
+        import wandb as wandb_module
+        wandb = wandb_module
+        # run id 存在输出目录里：--resume 接着训时接回同一条曲线（存进存档要动格式，没必要）
+        id_file = out / "wandb_id.txt"
+        run_id = id_file.read_text().strip() if id_file.exists() else None
+        wandb.init(project=args.wandb_project, id=run_id, resume="must" if run_id else None,
+                   name=str(out), config=vars(args))
+        if not run_id:
+            id_file.write_text(wandb.run.id)
     try:
         for step in range(start_step, steps):
             scale = schedule(step)
@@ -318,6 +329,8 @@ def run_training(args, zero: Zero, device: torch.device) -> dict:
             if record and log:
                 log.write(json.dumps(record) + "\n")
                 log.flush()
+                if wandb:
+                    wandb.log(record, step=done)  # 和 log.jsonl 完全相同的字段：loss、smooth_loss、lr_scale、grad_norm、val_loss……
             if done % args.save_every == 0 or done == steps:
                 states = zero.gather_optimizer_states(optimizers)  # 多卡时所有卡一起合成，0 号卡写盘
                 if zero.main:
@@ -325,6 +338,8 @@ def run_training(args, zero: Zero, device: torch.device) -> dict:
     finally:
         if log:
             log.close()
+        if wandb:
+            wandb.finish()
     return dict(step=steps, loss=loss_value, val_loss=val_loss, tokens=(steps - start_step) * tokens_per_step)
 
 
@@ -374,6 +389,8 @@ def parse_args(argv=None):
     g.add_argument("--eval-micro-batch-size", type=int, default=0, help="验证每次前向处理几条；0 跟随训练，不改变抽到的验证片段")
     g.add_argument("--save-every", type=int, default=500)
     g.add_argument("--resume", action="store_true", help="从输出目录里的存档接着跑")
+    g.add_argument("--use-wandb", action="store_true", help="把和 log.jsonl 相同的记录同步到 Weights & Biases（wandb 0 号卡连）")
+    g.add_argument("--wandb-project", default="TinyBrain-Pretrain", help="wandb 项目名")
 
     g = p.add_argument_group("硬件")
     g.add_argument("--device", default="auto", help="auto、cuda、mps 或 cpu")

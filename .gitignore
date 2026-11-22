@@ -17,3 +17,4 @@ __pycache__/
 
 # 测试只留在本地，不发布
 tests/
+wandb/
